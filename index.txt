@@ -1,0 +1,54 @@
+Lab 3 Test Suite
+Programming Language Technology, 2018
+
+%!target:html
+%!encoding: utf-8
+
+'''
+<script src="../../../enhance_page.js" type="text/javascript"></script>
+'''
+
+= Introduction =
+
+Before you submit [lab 3 ../index.html], your solution must pass the
+testsuite. This document describes how to obtain and use
+this testsuite.
+
+= Preparations =
+
+You will only need to do this part once.
+
++ Download [lab3-testsuite.tar.gz lab3-testsuite.tar.gz].
+
++ Unpack the downloaded file:
+```
+$ tar -zxf lab3-testsuite.tar.gz
+```
+
++ Enter the ``lab3-testsuite`` directory:
+```
+$ cd lab3-testsuite
+```
+
++ Compile the test program using ``make`` or alternatively:
+```
+$ ghc -threaded --make -o plt-test-lab3 plt-test-lab3.hs
+```
+
+
+= Running the testsuite =
+
+This is what you need to do to test your solution.
+
+
++ Enter the ``lab3-testsuite`` directory (if you are not there already):
+```
+$ cd lab3-testsuite
+```
+
++ Run ``plt-test-lab3`` with the path to the directory
+where your solution is located:
+
+```
+$ ./plt-test-lab3 path/to/your/solution/
+```
