@@ -121,7 +121,8 @@ mainOpts progdir testSuite = do
   good <- runTests progdir testSuite
   putStrLn ""
   putStrLn "------------------------------------------------------------"
-  report "Good programs: " good
+  ok <- report "Good programs: " good
+  if ok then exitSuccess else exitFailure
 
 --
 -- * Test driver
@@ -407,14 +408,17 @@ prFile f = do
     putStrLn $ "----------------- end " ++ f ++ " -------------------"
 
 -- | Report how many tests passed and which tests failed (if any).
-report :: String -> [(String,Bool)] -> IO ()
+--   Returns 'True' if all passed.
+report :: String -> [(String,Bool)] -> IO Bool
 report n rs = do
   let (passed, failed) = partition snd rs
   let (p,t) = (length passed, length rs)
       c     = if p == t then green else red
   putStrLn $ color c $ n ++ "passed " ++ show p ++ " of " ++ show t ++ " tests"
-  unless (null failed) $
+  let ok = null failed
+  unless ok $
     mapM_ (putStrLn . color red) $ "Failed tests:" : map fst failed
+  return ok
 
 -- Inlined from https://hackage.haskell.org/package/pretty-terminal-0.1.0.0/docs/src/System-Console-Pretty.html#supportsPretty :
 
