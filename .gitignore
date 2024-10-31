@@ -1,2 +1,6 @@
-progs-test-lab3
+.stack-work/
+dist-newstyle/
+/lab3-testsuite.tar.gz
+stack*.yaml.lock
+/progs-test-lab3
 *.class

@@ -1,0 +1,3 @@
+[submodule "lab2-testsuite"]
+	path = lab2-testsuite
+	url = git@github.com:teach-plt/lab2-testsuite.git

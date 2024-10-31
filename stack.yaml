@@ -1,1 +1,9 @@
-../../stack.yaml
+# Programming Language Technology (Chalmers DAT151 / GU DIT231)
+# (C) 2022-24 Andreas Abel
+# All rights reserved.
+
+# We use the recommended GHC version (9.4.8 as of 2024-10-30).
+resolver: lts-21.25
+
+# See https://www.stackage.org/ "Latest releases per GHC version"
+# for alternatives.

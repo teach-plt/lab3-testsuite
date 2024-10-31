@@ -1,1 +1,1 @@
-../../lab2/testsuite/prelude.cc
+lab2-testsuite/prelude.cc
