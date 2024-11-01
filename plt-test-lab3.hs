@@ -21,7 +21,7 @@ import Data.List              ( isInfixOf, partition, sort )
 import System.Console.GetOpt  ( OptDescr(Option), pattern RequireOrder, pattern NoArg, pattern ReqArg, getOpt )
 import System.Directory       ( doesFileExist, doesDirectoryExist, exeExtension, listDirectory, removeFile )
 import System.Environment     ( getArgs, lookupEnv )
-import System.FilePath        ( (<.>), ( </>), joinPath, replaceExtension, takeBaseName, takeDirectory, takeExtension )
+import System.FilePath        ( (<.>), replaceExtension, takeBaseName, takeDirectory, takeExtension )
 import System.Exit            ( ExitCode(ExitFailure, ExitSuccess), exitFailure, exitSuccess )
 import System.IO              ( Handle, pattern LineBuffering, hIsTerminalDevice, hSetBuffering
                               , hPutStr, hPutStrLn, stderr, stdout )
@@ -36,7 +36,7 @@ type TestSuite = [FilePath]
 
 -- | When no @test@ option is given.
 defaultTestSuite :: TestSuite
-defaultTestSuite = [ "good", "dir-for-path-test/one-more-dir" ]
+defaultTestSuite = [ "lab2-testsuite/good", "dir-for-path-test/one-more-dir" ]
 
 -- | Executable name.
 executable_name :: FilePath
@@ -49,6 +49,10 @@ classpathSep = ';'
 #else
 classpathSep = ':'
 #endif
+
+-- | Use slash as path separator also under Windows.
+(</>) :: FilePath -> FilePath -> FilePath
+x </> y = concat [ x, "/", y ]
 
 data Options = Options
   { debugFlag       :: Bool
@@ -165,7 +169,7 @@ runMake dir = do
 -- | Run test on all ".cc" files in given directories (default "good").
 runTests :: FilePath -> Tests -> IO [(FilePath,Bool)]
 runTests dir files = do
-  let prog = joinPath [dir, executable_name]
+  let prog = dir </> executable_name
   checkFileExists prog
   mapM (\ f -> (f,) <$> testBackendProg prog f) files
 

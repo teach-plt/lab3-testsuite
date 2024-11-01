@@ -19,13 +19,15 @@ tested-with:
   GHC ==9.10.1 || ==9.8.2 || ==9.6.6 || ==9.4.8 || ==9.2.8 || ==9.0.2
    || ==8.10.7 || ==8.8.4 || ==8.6.5
 
-extra-source-files:
+data-dir:
+  .
+data-files:
   Runtime.class
   Runtime.java
-  prelude.cc
-  good/**/*.cc
-  good/**/*.cc.input
-  good/**/*.cc.output
+  lab2-testsuite/prelude.cc
+  lab2-testsuite/good/**/*.cc
+  lab2-testsuite/good/**/*.cc.input
+  lab2-testsuite/good/**/*.cc.output
   dir-for-path-test/**/*.cc
 
 executable plt-test-lab3
