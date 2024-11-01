@@ -1,0 +1,128 @@
+name: stack
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  stack:
+    name: Stack ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    env:
+      stack: 'stack --system-ghc --no-install-ghc'
+
+    steps:
+
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Clone Andreas' solution
+      run: |
+        eval $(ssh-agent -s)
+        ssh-add - <<< '${{ secrets.PRIVATE_READ_ACCESS_TOKEN }}'
+        git clone git@github.com:teach-plt/lab-solutions-andreas
+
+    # Fix the java version to 21
+    - uses: actions/setup-java@v4
+      with:
+        java-version: '21'
+        distribution: temurin
+
+    - name: Install GHC and stack with haskell-actions/setup
+      uses: haskell-actions/setup@v2
+      id:   setup
+      with:
+        ghc-version: 9.4.8
+        enable-stack: true
+        cabal-update: false
+
+    # According to https://github.com/commercialhaskell/stack/issues/5754#issuecomment-1696156869
+    # not all of ~/.stack should be cached,
+    # only the index (pantry) and the dependencies (sqlite3+snapshots).
+
+    ## Pantry
+    ########################################################################
+
+    - name: Restore cached stack pantry
+      uses: actions/cache/restore@v4
+      id:   cache-pantry
+      with:
+        path: ${{ steps.setup.outputs.stack-root }}/pantry
+        key:  ${{ runner.os }}-stack-${{ steps.setup.outputs.stack-version }}-pantry-${{ github.sha }}
+        restore-keys: |
+              ${{ runner.os }}-stack-${{ steps.setup.outputs.stack-version }}-pantry-
+
+    - name: Stack update
+      if:   steps.cache-pantry.outputs.cache-hit != 'true'
+      run:  ${{ env.stack }} update
+
+    - name: Cache stack pantry
+      if:   always() && steps.cache-pantry.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.setup.outputs.stack-root }}/pantry
+        key:  ${{ steps.cache-pantry.outputs.cache-primary-key }}
+
+    ## Configure stack
+    ########################################################################
+
+    ## We turn on --system-ghc globally for any scripts invoking Stack.
+
+    - name: Configure stack
+      run: |
+        stack config set install-ghc --global false
+        stack config set  system-ghc --global true
+
+    ## Dependencies
+    ########################################################################
+
+    - name: Restore cached dependencies
+      uses: actions/cache/restore@v4
+      id:   cache-deps
+      with:
+        path: |
+          ${{ steps.setup.outputs.stack-root }}/stack.sqlite3
+          ${{ steps.setup.outputs.stack-root }}/snapshots
+        key: ${{ runner.os }}-stack-${{ steps.setup.outputs.stack-version }}-ghc-${{ steps.setup.outputs.ghc-version }}-plan-${{ github.sha }}
+        restore-keys: |
+             ${{ runner.os }}-stack-${{ steps.setup.outputs.stack-version }}-ghc-${{ steps.setup.outputs.ghc-version }}-
+
+    - name: Build dependencies
+      # if:   steps.cache-deps.outputs.cache-hit != 'true'
+      run:  ${{ env.stack }} test --dependencies-only
+
+    ## Build and test
+    ########################################################################
+
+    - name: Build w/ tests
+      run: ${{ env.stack }} test --no-run-tests
+
+    - name: Run testsuite on Andreas' solution
+      run: |
+        ${{ env.stack }} run -- --test lab2-testsuite/good --test dir-for-path-test/one-more-dir lab-solutions-andreas/3/haskell
+
+    ## Finish
+    ########################################################################
+
+    - name: Cache dependencies
+      if:   always() && steps.cache-deps.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ${{ steps.setup.outputs.stack-root }}/stack.sqlite3
+          ${{ steps.setup.outputs.stack-root }}/snapshots
+        key:  ${{ steps.cache-deps.outputs.cache-primary-key }}

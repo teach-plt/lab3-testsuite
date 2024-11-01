@@ -4,3 +4,4 @@ dist-newstyle/
 stack*.yaml.lock
 /progs-test-lab3
 *.class
+*.j
