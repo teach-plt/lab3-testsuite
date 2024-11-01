@@ -1,5 +1,8 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
@@ -7,39 +10,53 @@
 
 -- GHC needs -threaded
 
-import Control.Exception
-import Control.Monad
+import Control.Exception      ( IOException, catch )
+import Control.Monad          ( forM, forM_, unless, void, when )
+import Control.Monad.Reader   ( ReaderT, runReaderT, asks )
+import Control.Monad.IO.Class ( liftIO )
 
-import Data.Char
-import Data.IORef
-import Data.List (isInfixOf, partition, sort)
+import Data.Char              ( isSpace )
+import Data.List              ( isInfixOf, partition, sort )
 
-import System.Console.GetOpt
-import System.Directory
-import System.Environment
-import System.FilePath
-import System.Exit
-import System.IO
-import System.Process
-import System.IO.Unsafe
+import System.Console.GetOpt  ( OptDescr(Option), pattern RequireOrder, pattern NoArg, pattern ReqArg, getOpt )
+import System.Directory       ( doesFileExist, doesDirectoryExist, exeExtension, listDirectory, removeFile )
+import System.Environment     ( getArgs, lookupEnv )
+import System.FilePath        ( (<.>), ( </>), joinPath, replaceExtension, takeBaseName, takeDirectory, takeExtension )
+import System.Exit            ( ExitCode(ExitFailure, ExitSuccess), exitFailure, exitSuccess )
+import System.IO              ( Handle, pattern LineBuffering, hIsTerminalDevice, hSetBuffering
+                              , hPutStr, hPutStrLn, stderr, stdout )
+import System.IO.Unsafe       ( unsafePerformIO )
+import System.Process         ( readProcessWithExitCode, showCommandForUser )
 
---
+---------------------------------------------------------------------------
 -- * Configuration
---
+---------------------------------------------------------------------------
 
--- | Executable name
+type TestSuite = [FilePath]
+
+-- | When no @test@ option is given.
+defaultTestSuite :: TestSuite
+defaultTestSuite = [ "good", "dir-for-path-test/one-more-dir" ]
+
+-- | Executable name.
 executable_name :: FilePath
 -- You might have to add or remove .exe here if you are using Windows
 executable_name = "lab3" <.> exeExtension
+
+classpathSep :: Char
+#if defined(mingw32_HOST_OS)
+classpathSep = ';'
+#else
+classpathSep = ':'
+#endif
 
 data Options = Options
   { debugFlag       :: Bool
   , doublesFlag     :: Bool
   , makeFlag        :: Bool
   , testSuiteOption :: TestSuite
+  , progDir         :: FilePath
   }
-
-type TestSuite = [FilePath]
 
 defaultOptions :: Options
 defaultOptions = Options
@@ -47,102 +64,102 @@ defaultOptions = Options
   , doublesFlag     = True
   , makeFlag        = True
   , testSuiteOption = []
+  , progDir         = ""
   }
 
--- | When no @test@ option is given.
---
-defaultTestSuite :: TestSuite
-defaultTestSuite = [ "good", "dir-for-path-test/one-more-dir" ]
-
---
+---------------------------------------------------------------------------
 -- * Main
---
+---------------------------------------------------------------------------
 
 main :: IO ()
-main = setup >> getArgs >>= parseArgs >>= uncurry mainOpts
+main = do
+  hSetBuffering stdout LineBuffering -- in various contexts this is guessed incorrectly
+  args <- getArgs
+  opts <- maybe usage pure $ parseArgs args
+  runReaderT mainOpts opts
 
--- | In various contexts this is guessed incorrectly
-setup :: IO ()
-setup = hSetBuffering stdout LineBuffering
-
-enableDebug :: Options -> Options
-enableDebug options = options { debugFlag = True }
-
-enableDoubles :: Options -> Options
-enableDoubles options = options { doublesFlag = True }
-
-disableDoubles :: Options -> Options
-disableDoubles options = options { doublesFlag = False }
-
-disableMake :: Options -> Options
-disableMake options = options { makeFlag = False }
-
-addTest :: FilePath -> Options -> Options
-addTest f options = options { testSuiteOption = f : testSuiteOption options }
-
-optDescr :: [OptDescr (Options -> Options)]
-optDescr = [ Option []    ["debug"]      (NoArg  enableDebug       ) "print debug messages"
-           , Option []    ["doubles"]    (NoArg  enableDoubles     ) "include double tests"  -- default
-           , Option []    ["no-doubles"] (NoArg  disableDoubles    ) "exclude double tests"
-           , Option []    ["no-make"]    (NoArg  disableMake       ) "do not run make"
-           , Option ['t'] ["test"]       (ReqArg addTest     "FILE") "good test case FILE"   -- many
-           ]
-
-type Tests = [FilePath]
-
--- | Filter out and process options, return the argument and the rest.
-parseArgs :: [String] -> IO (FilePath, Tests)
-parseArgs argv = case getOpt RequireOrder optDescr argv of
-  (o,[progdir],[]) -> do
-    let options = foldr ($) defaultOptions o
-    when (debugFlag   options)       $ writeIORef doDebug            True
-    when (not $ doublesFlag options) $ writeIORef includeDoubleTests False
-    when (not $ makeFlag options)    $ writeIORef doMake             False
-    let testSuite    = replaceNull (testSuiteOption options) defaultTestSuite
-        expandPath f = doesDirectoryExist f >>= \b -> if b then listCCFiles f else return [f]
-    tests <- concatMapM expandPath testSuite
-    return (progdir, tests)
-  (_,_,_) -> do
-    usage
-    exitFailure
-
-usage :: IO ()
+usage :: IO a
 usage = do
   hPutStrLn stderr "Usage: plt-test-lab3 [--debug] [--no-doubles] [--no-make] [-t|--test DIRECTORY]..."
   hPutStrLn stderr "           compiler_code_directory"
   exitFailure
 
-mainOpts :: FilePath -> Tests -> IO ()
-mainOpts progdir tests = do
-  putStrLn "This is the test program for Programming Languages Lab 3"
+parseArgs :: [String] -> Maybe Options
+parseArgs argv =
+  case getOpt RequireOrder optDescr argv of
+    (o,[progdir],[]) -> do
+      let options   = foldr ($) defaultOptions o
+      let testSuite = replaceNull (testSuiteOption options) defaultTestSuite
+      return options{ testSuiteOption = testSuite, progDir = progdir }
+    (_,_,_) -> Nothing
+
+  where
+    optDescr :: [OptDescr (Options -> Options)]
+    optDescr = [ Option []    ["debug"]      (NoArg  enableDebug       ) "print debug messages"
+               , Option []    ["doubles"]    (NoArg  enableDoubles     ) "include double tests"  -- default
+               , Option []    ["no-doubles"] (NoArg  disableDoubles    ) "exclude double tests"
+               , Option []    ["no-make"]    (NoArg  disableMake       ) "do not run make"
+               , Option ['t'] ["test"]       (ReqArg addTest     "FILE") "good test case FILE"   -- many
+               ]
+
+    enableDebug :: Options -> Options
+    enableDebug options = options { debugFlag = True }
+
+    enableDoubles :: Options -> Options
+    enableDoubles options = options { doublesFlag = True }
+
+    disableDoubles :: Options -> Options
+    disableDoubles options = options { doublesFlag = False }
+
+    disableMake :: Options -> Options
+    disableMake options = options { makeFlag = False }
+
+    addTest :: FilePath -> Options -> Options
+    addTest f options = options { testSuiteOption = f : testSuiteOption options }
+
+type M = ReaderT Options IO
+
+type Tests = [FilePath]
+
+mainOpts :: M ()
+mainOpts = do
+  liftIO $ putStrLn "This is the test program for Programming Languages Lab 3"
+
+  -- Compute testsuite from directories
+  testSuite <- asks testSuiteOption
+  tests <- concat <$> do
+    forM testSuite \ f -> do
+      -- Expand each directory into its files.
+      liftIO (doesDirectoryExist f) >>= \case
+        True -> listCCFiles f
+        False -> pure [f]
+
   -- Cleanup files from old runs
-  forM_ tests $ \ f -> cleanFiles $ map (replaceExtension f) [".j", ".class"]
-  domake <- readIORef doMake
-  when domake $ runMake progdir
-  good <- runTests progdir tests
-  putStrLn ""
-  putStrLn "------------------------------------------------------------"
-  ok <- report "Good programs: " good
-  if ok then exitSuccess else exitFailure
+  forM_ tests \ f -> liftIO do
+    cleanFiles $ map (replaceExtension f) [".j", ".class"]
 
---
+  -- Build the compiler
+  progdir <- asks progDir
+  whenM (asks makeFlag) $ runMake progdir
+
+  -- Test the compiler
+  good <- liftIO $ runTests progdir tests
+
+  -- Report the results
+  liftIO do
+    putStrLn ""
+    putStrLn "------------------------------------------------------------"
+    ok <- report "Good programs: " good
+    if ok then exitSuccess else exitFailure
+
+---------------------------------------------------------------------------
 -- * Test driver
---
-
--- | Whether to run tests involving doubles
-{-# NOINLINE includeDoubleTests  #-}
-includeDoubleTests :: IORef Bool
-includeDoubleTests = unsafePerformIO $ newIORef True
-
--- | Whether to run make
-{-# NOINLINE doMake  #-}
-doMake :: IORef Bool
-doMake = unsafePerformIO $ newIORef True
+---------------------------------------------------------------------------
 
 -- | Run "make" in given directory.
-runMake :: FilePath -> IO ()
+runMake :: FilePath -> M ()
 runMake dir = do
-  checkDirectoryExists dir
+  liftIO $ checkDirectoryExists dir
   runPrgNoFail_ "make" ["-C"] dir
 
 -- | Run test on all ".cc" files in given directories (default "good").
@@ -193,14 +210,23 @@ testBackendProg prog f = do
           putStrLn $ color blue $ output
           return False
     else do
-      reportError prog ("did not find any Java class file at \"" ++ expectedJavaClassFilePath ++ "\" (note that the output Java class file must be written to same directory as the input C++ file)") (Just f) (nullMaybe input) (nullMaybe compilerOut) (nullMaybe compilerErr)
+      let
+        msg = concat
+          [ "did not find any Java class file at \""
+          , expectedJavaClassFilePath
+          , "\" (note that the output Java class file must be written to same directory as the input C++ file)"
+          ]
+      reportError prog msg (Just f) (nullMaybe input) (nullMaybe compilerOut) (nullMaybe compilerErr)
       return False
 
-listCCFiles :: FilePath -> IO [FilePath]
+listCCFiles :: FilePath -> M [FilePath]
 listCCFiles dir = do
-  doubles <- readIORef includeDoubleTests
-  sort . filter (doublesFilter doubles) . filter ((==".cc") . takeExtension) <$> listDirectoryRecursive dir
-  where doublesFilter doubles filename = doubles || not (isInfixOf "double" filename || isInfixOf "subtyping" filename)
+  doubles <- asks doublesFlag
+  sort . filter (doublesFilter doubles) . filter ((==".cc") . takeExtension) <$> do
+    liftIO $ listDirectoryRecursive dir
+  where
+    doublesFilter doubles filename =
+      doubles || not (isInfixOf "double" filename || isInfixOf "subtyping" filename)
 
 listDirectoryRecursive :: FilePath -> IO [FilePath]
 listDirectoryRecursive dir = do
@@ -208,65 +234,53 @@ listDirectoryRecursive dir = do
     False -> return []
     True  -> do
       fs <- map (dir </>) <$> listDirectory dir
-      (fs ++) <$> concatMapM listDirectoryRecursive fs
+      concat . (fs:) <$> mapM listDirectoryRecursive fs
 
---
+---------------------------------------------------------------------------
 -- * Debugging
---
-
--- | Is debugging on?
-{-# NOINLINE doDebug #-}
-doDebug :: IORef Bool
-doDebug = unsafePerformIO $ newIORef False
+---------------------------------------------------------------------------
 
 -- | Print debug message if debugging is on.
-debug :: String -> IO ()
-debug s = do
-  d <- readIORef doDebug
-  when d $ putStrLn s
+debug :: String -> M ()
+debug = whenM (asks debugFlag) . liftIO . putStrLn
 
---
--- * Utilities
---
+---------------------------------------------------------------------------
+-- * Run programs
+---------------------------------------------------------------------------
 
-trim :: String -> String
-trim = f . f
-  where f = reverse . dropWhile isSpace
+isExitFailure :: ExitCode -> Bool
+isExitFailure ExitSuccess = False
+isExitFailure ExitFailure{} = True
 
-cleanDirectory :: FilePath -> [String] -> IO ()
-cleanDirectory path exts = do
-  files <- listDirectory path
-  forM_ files $ \ f -> do
-    when (takeExtension f `elem` exts) $
-      cleanFile $ path </> f
+runPrgNoFail_ ::
+     FilePath  -- ^ Executable
+  -> [String]  -- ^ Flags
+  -> FilePath  -- ^ Filename
+  -> M ()
+runPrgNoFail_ exe flags file = void $ runPrgNoFail exe flags file
 
-cleanFile :: FilePath -> IO ()
-cleanFile file = whenM (doesFileExist file) $ removeFile file
+runPrgNoFail ::
+     FilePath            -- ^ Executable
+  -> [String]            -- ^ Flag
+  -> FilePath            -- ^ Filename
+  -> M (String, String)  -- ^ stdout and stderr
+runPrgNoFail exe flags file = do
+  let args = flags ++ [file]
+  liftIO $ hPutStr stderr $ "Running " ++ showCommandForUser exe args ++ "... "
+  (s, out, err) <- liftIO $ readProcessWithExitCode exe args ""
+  liftIO $ hPutStrLnExitCode s stderr "."
+  case s of
+    ExitFailure x -> liftIO do
+      reportError exe ("with status " ++ show x) (Just file) Nothing (nullMaybe out) (nullMaybe err)
+      exitFailure
+    ExitSuccess -> do
+      debug $ "Standard output:\n" ++ out
+      debug $ "Standard error:\n" ++ err
+      return (out,err)
 
-cleanFiles :: [FilePath] -> IO ()
-cleanFiles = mapM_ cleanFile
-
-classpathSep :: Char
-#if defined(mingw32_HOST_OS)
-classpathSep = ';'
-#else
-classpathSep = ':'
-#endif
-
-quote :: FilePath -> FilePath
-quote p = "'" ++ concatMap f p ++ "'"
-  where
-    f '\'' = "\\'"
-    f c = [c]
-
-readFileIfExists :: FilePath -> IO String
-readFileIfExists f = catch (readFile f) exceptionHandler
-   where exceptionHandler :: IOException -> IO String
-         exceptionHandler _ = return ""
-
---
+---------------------------------------------------------------------------
 -- * Terminal output colors
---
+---------------------------------------------------------------------------
 
 type Color = Int
 
@@ -300,125 +314,6 @@ red   = 1
 green = 2
 blue  = 6
 
---
--- * Run programs
---
-
-isExitFailure :: ExitCode -> Bool
-isExitFailure ExitSuccess = False
-isExitFailure ExitFailure{} = True
-
-runPrgNoFail_ :: FilePath -- ^ Executable
-              -> [String] -- ^ Flags
-
-              -> FilePath -- ^ Filename
-              -> IO ()
-runPrgNoFail_ exe flags file = runPrgNoFail exe flags file >> return ()
-
-runPrgNoFail :: FilePath -- ^ Executable
-             -> [String] -- ^ Flag
-             -> FilePath -- ^ Filename
-             -> IO (String,String) -- ^ stdout and stderr
-runPrgNoFail exe flags file = do
-  let c = showCommandForUser exe (flags ++ [file])
-  hPutStr stderr $ "Running " ++ c ++ "... "
-  (s,out,err) <- readProcessWithExitCode exe (flags ++ [file]) ""
-  hPutStrLnExitCode s stderr "."
-  case s of
-    ExitFailure x -> do
-      reportError exe ("with status " ++ show x) (Just file) Nothing (nullMaybe out) (nullMaybe err)
-      exitFailure
-    ExitSuccess -> do
-      debug $ "Standard output:\n" ++ out
-      debug $ "Standard error:\n" ++ err
-      return (out,err)
-
---
--- * Checking files and directories
---
-
-checkFileExists :: FilePath -> IO ()
-checkFileExists f = do
-  e <- doesFileExist f
-  unless e $ do
-    putStrLn $ color red $ quote f ++ " is not an existing file."
-    exitFailure
-
-checkDirectoryExists :: FilePath -> IO ()
-checkDirectoryExists f = do
-  e <- doesDirectoryExist f
-  unless e $ do
-    putStrLn $ color red $ quote f ++ " is not an existing directory."
-    exitFailure
-
---
--- * Error reporting and output checking
---
-
-colorExitCode :: ExitCode -> String -> String
-colorExitCode ExitSuccess     = color green
-colorExitCode (ExitFailure _) = color red
-
-putStrLnExitCode :: ExitCode -> String -> IO ()
-putStrLnExitCode e = putStrLn . colorExitCode e
-
-hPutStrLnExitCode :: ExitCode -> Handle -> String -> IO ()
-hPutStrLnExitCode e h = hPutStrLn h . colorExitCode e
-
-reportErrorColor :: Color
-                 -> String         -- ^ command that failed
-                 -> String         -- ^ how it failed
-                 -> Maybe FilePath -- ^ source file
-                 -> Maybe String   -- ^ given input
-                 -> Maybe String   -- ^ stdout output
-                 -> Maybe String   -- ^ stderr output
-                 -> IO ()
-reportErrorColor col c m f i o e =
-    do
-    putStrLn $ color col $ c ++ " failed: " ++ m
-    whenJust f prFile
-    whenJust i $ \i -> do
-                       putStrLn "Given this input:"
-                       putStrLn $ color blue $ replaceNull i "<nothing>"
-    whenJust o $ \o -> do
-                       putStrLn "It printed this to standard output:"
-                       putStrLn $ color blue $ replaceNull o "<nothing>"
-    whenJust e $ \e -> do
-                       putStrLn "It printed this to standard error:"
-                       putStrLn $ color blue $ replaceNull e "<nothing>"
-
-reportError :: String         -- ^ command that failed
-            -> String         -- ^ how it failed
-            -> Maybe FilePath -- ^ source file
-            -> Maybe String   -- ^ given input
-            -> Maybe String   -- ^ stdout output
-            -> Maybe String   -- ^ stderr output
-            -> IO ()
-reportError = reportErrorColor red
-
-prFile :: FilePath -> IO ()
-prFile f = do
-  e <- doesFileExist f
-  when e $ do
-    putStrLn $ "For input file " ++ f ++ ":"
-    putStrLn $ "---------------- begin " ++ f ++ " ------------------"
-    s <- readFile f
-    putStrLn $ color green s
-    putStrLn $ "----------------- end " ++ f ++ " -------------------"
-
--- | Report how many tests passed and which tests failed (if any).
---   Returns 'True' if all passed.
-report :: String -> [(String,Bool)] -> IO Bool
-report n rs = do
-  let (passed, failed) = partition snd rs
-  let (p,t) = (length passed, length rs)
-      c     = if p == t then green else red
-  putStrLn $ color c $ n ++ "passed " ++ show p ++ " of " ++ show t ++ " tests"
-  let ok = null failed
-  unless ok $
-    mapM_ (putStrLn . color red) $ "Failed tests:" : map fst failed
-  return ok
-
 -- Inlined from https://hackage.haskell.org/package/pretty-terminal-0.1.0.0/docs/src/System-Console-Pretty.html#supportsPretty :
 
 -- | Whether or not the current terminal supports pretty-terminal
@@ -439,13 +334,120 @@ supportsPretty =
       where
         isDumb = (== Just "dumb") <$> lookupEnv "TERM"
 
+---------------------------------------------------------------------------
+-- * Checking files and directories
+---------------------------------------------------------------------------
 
---
--- * Utilities for monads and lists
---
+checkFileExists :: FilePath -> IO ()
+checkFileExists f = do
+  e <- doesFileExist f
+  unless e do
+    putStrLn $ color red $ quote f ++ " is not an existing file."
+    exitFailure
 
-concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
-concatMapM f = fmap concat . mapM f
+checkDirectoryExists :: FilePath -> IO ()
+checkDirectoryExists f = do
+  e <- doesDirectoryExist f
+  unless e do
+    putStrLn $ color red $ quote f ++ " is not an existing directory."
+    exitFailure
+
+---------------------------------------------------------------------------
+-- * Error reporting and output checking
+---------------------------------------------------------------------------
+
+colorExitCode :: ExitCode -> String -> String
+colorExitCode ExitSuccess     = color green
+colorExitCode (ExitFailure _) = color red
+
+putStrLnExitCode :: ExitCode -> String -> IO ()
+putStrLnExitCode e = putStrLn . colorExitCode e
+
+hPutStrLnExitCode :: ExitCode -> Handle -> String -> IO ()
+hPutStrLnExitCode e h = hPutStrLn h . colorExitCode e
+
+reportErrorColor ::
+     Color
+  -> String         -- ^ command that failed
+  -> String         -- ^ how it failed
+  -> Maybe FilePath -- ^ source file
+  -> Maybe String   -- ^ given input
+  -> Maybe String   -- ^ stdout output
+  -> Maybe String   -- ^ stderr output
+  -> IO ()
+reportErrorColor col c m f i o e = do
+    putStrLn $ color col $ c ++ " failed: " ++ m
+    whenJust f prFile
+    whenJust i \ i -> do
+      putStrLn "Given this input:"
+      putStrLn $ color blue $ replaceNull i "<nothing>"
+    whenJust o \ o -> do
+      putStrLn "It printed this to standard output:"
+      putStrLn $ color blue $ replaceNull o "<nothing>"
+    whenJust e \ e -> do
+      putStrLn "It printed this to standard error:"
+      putStrLn $ color blue $ replaceNull e "<nothing>"
+
+reportError ::
+     String         -- ^ command that failed
+  -> String         -- ^ how it failed
+  -> Maybe FilePath -- ^ source file
+  -> Maybe String   -- ^ given input
+  -> Maybe String   -- ^ stdout output
+  -> Maybe String   -- ^ stderr output
+  -> IO ()
+reportError = reportErrorColor red
+
+prFile :: FilePath -> IO ()
+prFile f = do
+  whenM (doesFileExist f) do
+    putStrLn $ "For input file " ++ f ++ ":"
+    putStrLn $ "---------------- begin " ++ f ++ " ------------------"
+    s <- readFile f
+    putStrLn $ color green s
+    putStrLn $ "----------------- end " ++ f ++ " -------------------"
+
+-- | Report how many tests passed and which tests failed (if any).
+--   Returns 'True' if all passed.
+report :: String -> [(String, Bool)] -> IO Bool
+report n rs = do
+  let (passed, failed) = partition snd rs
+  let ok = null failed
+  let c  = if ok then green else red
+  putStrLn $ color c $ n ++ "passed " ++ show (length passed) ++ " of " ++ show (length rs) ++ " tests"
+  unless ok $
+    mapM_ (putStrLn . color red) $ "Failed tests:" : map fst failed
+  return ok
+
+---------------------------------------------------------------------------
+-- * Utilities for files
+---------------------------------------------------------------------------
+
+cleanDirectory :: FilePath -> [String] -> IO ()
+cleanDirectory path exts = do
+  files <- listDirectory path
+  forM_ files \ f -> do
+    when (takeExtension f `elem` exts) $
+      cleanFile $ path </> f
+
+cleanFile :: FilePath -> IO ()
+cleanFile file = whenM (doesFileExist file) $ removeFile file
+
+cleanFiles :: [FilePath] -> IO ()
+cleanFiles = mapM_ cleanFile
+
+quote :: FilePath -> FilePath
+quote p = "'" ++ concatMap f p ++ "'"
+  where
+    f '\'' = "\\'"
+    f c = [c]
+
+readFileIfExists :: FilePath -> IO String
+readFileIfExists f = catch (readFile f) \ (_ :: IOException) -> return ""
+
+---------------------------------------------------------------------------
+-- * General utilities for monads, lists, and strings
+---------------------------------------------------------------------------
 
 whenM :: Monad m => m Bool -> m () -> m ()
 whenM mb m = mb >>= \b -> when b m
@@ -463,3 +465,8 @@ replaceNull as xs = ifNull as xs id
 
 nullMaybe :: [a] -> Maybe [a]
 nullMaybe as = ifNull as Nothing Just
+
+trim :: String -> String
+trim = f . f
+  where
+    f = reverse . dropWhile isSpace
