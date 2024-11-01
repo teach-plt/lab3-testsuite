@@ -13,7 +13,6 @@ import Control.Monad
 import Data.Char
 import Data.IORef
 import Data.List (isInfixOf, partition, sort)
-import Data.Maybe
 
 import System.Console.GetOpt
 import System.Directory
@@ -24,30 +23,36 @@ import System.IO
 import System.Process
 import System.IO.Unsafe
 
--- Executable name
+--
+-- * Configuration
+--
+
+-- | Executable name
 executable_name :: FilePath
 -- You might have to add or remove .exe here if you are using Windows
 executable_name = "lab3" <.> exeExtension
 
-concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
-concatMapM f = fmap concat . mapM f
+data Options = Options
+  { debugFlag       :: Bool
+  , doublesFlag     :: Bool
+  , makeFlag        :: Bool
+  , testSuiteOption :: TestSuite
+  }
 
-whenM :: Monad m => m Bool -> m () -> m ()
-whenM mb m = mb >>= \b -> when b m
+type TestSuite = [FilePath]
 
-whenJust :: Applicative m => Maybe a -> (a -> m ()) -> m ()
-whenJust (Just a) k = k a
-whenJust Nothing  _ = pure ()
+defaultOptions :: Options
+defaultOptions = Options
+  { debugFlag       = False
+  , doublesFlag     = True
+  , makeFlag        = True
+  , testSuiteOption = []
+  }
 
-ifNull :: [a] -> b -> ([a] -> b) -> b
-ifNull [] b _ = b
-ifNull as _ f = f as
-
-replaceNull :: [a] -> [a] -> [a]
-replaceNull as xs = ifNull as xs id
-
-nullMaybe :: [a] -> Maybe [a]
-nullMaybe as = ifNull as Nothing Just
+-- | When no @test@ option is given.
+--
+defaultTestSuite :: TestSuite
+defaultTestSuite = [ "good", "dir-for-path-test/one-more-dir" ]
 
 --
 -- * Main
@@ -59,11 +64,6 @@ main = setup >> getArgs >>= parseArgs >>= uncurry mainOpts
 -- | In various contexts this is guessed incorrectly
 setup :: IO ()
 setup = hSetBuffering stdout LineBuffering
-
-data Options = Options { debugFlag       :: Bool
-                       , doublesFlag     :: Bool
-                       , makeFlag        :: Bool
-                       , testSuiteOption :: Maybe TestSuite }
 
 enableDebug :: Options -> Options
 enableDebug options = options { debugFlag = True }
@@ -78,47 +78,48 @@ disableMake :: Options -> Options
 disableMake options = options { makeFlag = False }
 
 addTest :: FilePath -> Options -> Options
-addTest f options = options { testSuiteOption = Just $ maybe [f] (f:) $ testSuiteOption options }
+addTest f options = options { testSuiteOption = f : testSuiteOption options }
 
 optDescr :: [OptDescr (Options -> Options)]
 optDescr = [ Option []    ["debug"]      (NoArg  enableDebug       ) "print debug messages"
            , Option []    ["doubles"]    (NoArg  enableDoubles     ) "include double tests"  -- default
            , Option []    ["no-doubles"] (NoArg  disableDoubles    ) "exclude double tests"
            , Option []    ["no-make"]    (NoArg  disableMake       ) "do not run make"
-           , Option ['t'] ["test"]       (ReqArg addTest     "FILE") "good test case FILE"
+           , Option ['t'] ["test"]       (ReqArg addTest     "FILE") "good test case FILE"   -- many
            ]
 
+type Tests = [FilePath]
+
 -- | Filter out and process options, return the argument and the rest.
-parseArgs :: [String] -> IO (FilePath,TestSuite)
+parseArgs :: [String] -> IO (FilePath, Tests)
 parseArgs argv = case getOpt RequireOrder optDescr argv of
   (o,[progdir],[]) -> do
-    let defaultOptions = Options False True True Nothing
-        options = foldr ($) defaultOptions o
+    let options = foldr ($) defaultOptions o
     when (debugFlag   options)       $ writeIORef doDebug            True
     when (not $ doublesFlag options) $ writeIORef includeDoubleTests False
     when (not $ makeFlag options)    $ writeIORef doMake             False
-    let testSuite    = fromMaybe ["good", "dir-for-path-test/one-more-dir"] $ testSuiteOption options
+    let testSuite    = replaceNull (testSuiteOption options) defaultTestSuite
         expandPath f = doesDirectoryExist f >>= \b -> if b then listCCFiles f else return [f]
-    testSuite' <- concatMapM expandPath testSuite
-    return (progdir,testSuite')
+    tests <- concatMapM expandPath testSuite
+    return (progdir, tests)
   (_,_,_) -> do
     usage
     exitFailure
 
 usage :: IO ()
 usage = do
-  hPutStrLn stderr "Usage: plt-test-lab3 [--debug] [--no-doubles] [--no-make] [-t|--test FILE]..."
+  hPutStrLn stderr "Usage: plt-test-lab3 [--debug] [--no-doubles] [--no-make] [-t|--test DIRECTORY]..."
   hPutStrLn stderr "           compiler_code_directory"
   exitFailure
 
-mainOpts :: FilePath -> TestSuite -> IO ()
-mainOpts progdir testSuite = do
+mainOpts :: FilePath -> Tests -> IO ()
+mainOpts progdir tests = do
   putStrLn "This is the test program for Programming Languages Lab 3"
   -- Cleanup files from old runs
-  forM_ testSuite (\f -> cleanFiles $ map (replaceExtension f) [".j", ".class"])
+  forM_ tests $ \ f -> cleanFiles $ map (replaceExtension f) [".j", ".class"]
   domake <- readIORef doMake
   when domake $ runMake progdir
-  good <- runTests progdir testSuite
+  good <- runTests progdir tests
   putStrLn ""
   putStrLn "------------------------------------------------------------"
   ok <- report "Good programs: " good
@@ -144,10 +145,8 @@ runMake dir = do
   checkDirectoryExists dir
   runPrgNoFail_ "make" ["-C"] dir
 
-type TestSuite = [FilePath]
-
 -- | Run test on all ".cc" files in given directories (default "good").
-runTests :: FilePath -> TestSuite -> IO [(FilePath,Bool)]
+runTests :: FilePath -> Tests -> IO [(FilePath,Bool)]
 runTests dir files = do
   let prog = joinPath [dir, executable_name]
   checkFileExists prog
@@ -439,3 +438,28 @@ supportsPretty =
     hSupportsANSI h = (&&) <$> hIsTerminalDevice h <*> (not <$> isDumb)
       where
         isDumb = (== Just "dumb") <$> lookupEnv "TERM"
+
+
+--
+-- * Utilities for monads and lists
+--
+
+concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
+concatMapM f = fmap concat . mapM f
+
+whenM :: Monad m => m Bool -> m () -> m ()
+whenM mb m = mb >>= \b -> when b m
+
+whenJust :: Applicative m => Maybe a -> (a -> m ()) -> m ()
+whenJust (Just a) k = k a
+whenJust Nothing  _ = pure ()
+
+ifNull :: [a] -> b -> ([a] -> b) -> b
+ifNull [] b _ = b
+ifNull as _ f = f as
+
+replaceNull :: [a] -> [a] -> [a]
+replaceNull as xs = ifNull as xs id
+
+nullMaybe :: [a] -> Maybe [a]
+nullMaybe as = ifNull as Nothing Just
