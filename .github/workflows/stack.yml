@@ -34,6 +34,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         repository: teach-plt/lab-solutions-andreas
+        submodules: true
         path: lab-solutions-andreas
         ssh-key: ${{ secrets.PRIVATE_READ_ACCESS_TOKEN }}
 
