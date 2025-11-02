@@ -10,7 +10,7 @@ Prerequisites
 
 The following tools need to be in the `PATH`:
 
-- [Haskell Stack](https://docs.haskellstack.org/en/stable/) in a recent enough version, e.g. version 3.1.1.
+- [Haskell Stack](https://docs.haskellstack.org/en/stable/) in a recent enough version, e.g. version 3.7.1.
 - The [make](https://en.wikipedia.org/wiki/Make_(software)) tool.
 - The [java](https://en.wikipedia.org/wiki/Java_(programming_language)) virtual machine.
 

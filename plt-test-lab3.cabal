@@ -1,13 +1,13 @@
 cabal-version: 2.4
 
 -- Programming Language Technology (Chalmers DAT151 / GU DIT231)
--- (C) 2022-24 Andreas Abel
+-- (C) 2022-25 Andreas Abel
 -- All rights reserved.
 
 name:                      plt-test-lab3
 version:                   0.0
 author:                    Andreas Abel and the PLT team.
-copyright:                 (C) 2022-24 Andreas Abel
+copyright:                 (C) 2022-25 Andreas Abel
 license:                   NONE
                            -- All rights reserved.
 synopsis:
@@ -16,7 +16,7 @@ description:
   Test suite for Programming Language Technology lab3 (Chalmers DAT151 / GU DIT231).
 
 tested-with:
-  GHC ==9.10.1 || ==9.8.2 || ==9.6.6 || ==9.4.8 || ==9.2.8 || ==9.0.2
+  GHC ==9.12.2 || ==9.10.3 || ==9.8.4 || ==9.6.7 || ==9.4.8 || ==9.2.8 || ==9.0.2
    || ==8.10.7 || ==8.8.4 || ==8.6.5
 
 data-dir:

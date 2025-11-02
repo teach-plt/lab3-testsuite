@@ -26,12 +26,12 @@ jobs:
 
     steps:
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         submodules: recursive
 
     - name: Clone Andreas' solution
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         repository: teach-plt/lab-solutions-andreas
         submodules: true
@@ -55,7 +55,7 @@ jobs:
       uses: haskell-actions/setup@v2
       id:   setup
       with:
-        ghc-version: 9.4.8
+        ghc-version: 9.6.7
         enable-stack: true
         cabal-update: false
 
